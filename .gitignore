@@ -1,0 +1,14 @@
+.cache/
+wifi.env
+firmware/include/wifi_credentials.h
+firmware/.pio/
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/
+firmware/dependencies.lock
+**/.cache/
+**/__pycache__/
+*.pyc
+cyd_udp_log.txt
+*_udp_log.txt
