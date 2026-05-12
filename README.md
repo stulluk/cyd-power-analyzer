@@ -1,109 +1,203 @@
-# CYD power analyzer
+# CYD Power Analyzer
 
-Firmware and small host scripts for the **ESP32 Cheap Yellow Display (CYD)**—landscape UI with **LVGL 8**, **TFT_eSPI**, **Arduino / PlatformIO**, **Wi‑Fi STA**, and **subnet UDP broadcast telemetry** on port **4210**. Voltage, current, and power are currently **random mock values** (placeholder until INA sensors are wired on I2C).
+Firmware and host tooling for an **ESP32 Cheap Yellow Display (CYD / ESP32-2432S028)** power analyzer. The device reads an **INA226** over I2C, renders live **Vbus / current / power** on the LCD, broadcasts JSON telemetry over UDP, serves a small browser dashboard, and prints serial diagnostics for bring-up.
 
-Repository: https://github.com/stulluk/cyd-power-analyzer  
+Repository: <https://github.com/stulluk/cyd-power-analyzer>
 
-## Hardware
-
-- CYD (**ESP32‑2432S028**) with ILI9341-class display; pin profile aligns with common Marauder CYD TFT_eSPI setups (`firmware/include/User_Setup.h`).
-- References: [ESP32-Cheap-Yellow-Display](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display), TFT_eSPI fork [ggaljoen/TFT_eSPI](https://github.com/ggaljoen/TFT_eSPI) (pinned zip in `platformio.ini`).
-
-## What the firmware does today
+## Current Features
 
 | Area | Behavior |
-|------|-----------|
-| **Display** | Title, three large monospace metric lines (**Vbus / I / P**), yellow scrolling Wi‑Fi footer. |
-| **Refresh** | Metrics and UDP JSON about **5 Hz** (`kMetricsPeriodMs = 200`). |
-| **Wi‑Fi** | STA; credentials from repo-root **`wifi.env`** → generated **`firmware/include/wifi_credentials.h`** (never commit real secrets). |
-| **Telemetry** | When connected: JSON UDP **broadcast** to subnet on **`CYD_UDP_TELEM_PORT` (4210)**. |
-| **Serial** | `STATS cpu=N ram=M` about **once per second** (CRLF for minicom); `WIFI ...` every **3×** STATS. |
+|------|----------|
+| **Sensor** | Direct INA226 register access over `Wire` (no INA library dependency). |
+| **Display** | LVGL/TFT_eSPI landscape UI with large `Vbus`, `I`, and `P` rows plus Wi-Fi/sensor footer. |
+| **Web UI** | `http://<device-ip>/` shows the same live values; `/api/metrics` returns JSON. |
+| **UDP telemetry** | Broadcast JSON on `CYD_UDP_TELEM_PORT` (`4210`) about every 200 ms when Wi-Fi is connected. |
+| **Serial diagnostics** | `STATS`, `METRIC`, `INA226_RAW`, and Wi-Fi/IP lines at 115200 baud. |
+| **Probe firmware** | Minimal serial-only INA226 probe in `firmware/ina226_serial_probe/`. |
+| **Docker workflow** | Build and flash through Docker/PlatformIO scripts; no host PlatformIO install required. |
 
-Copy `wifi.env.example` → `wifi.env` and set `SSID` / `psk`.
+## Hardware Wiring
 
----
+The current firmware expects an INA226 at I2C address `0x40` on the CYD connector pins:
 
-## Telemetry and monitoring (theory)
+| Signal | CYD GPIO | Notes |
+|--------|----------|-------|
+| `SDA` | `GPIO27` | CN1 GPIO pin. |
+| `SCL` | `GPIO22` | CN1/P3 GPIO pin. |
+| `GND` | CYD GND | Share reference with the INA226 module. |
+| `3V3` | CYD 3.3 V | Power the INA226 logic side. |
 
-### JSON over UDP (~5 Hz)
+`GPIO21` is the TFT backlight line on this CYD variant and is intentionally not used for I2C.
 
-Each datagram is one JSON object (no newline inside). Example:
+### INA226 Range Notes
 
-```json
-{"vbus_v":4.844,"i_a":3.55,"p_w":47.048,"ms":139007,"cpu":28,"ram":37}
+The tested module uses an `R100` shunt, so the firmware constants are:
+
+```cpp
+static constexpr float kIna226ShuntOhms = 0.1f;
+static constexpr float kIna226MaxExpectedAmps = 0.8f;
 ```
 
-| Field | Meaning |
-|-------|---------|
-| `vbus_v`, `i_a`, `p_w` | Mock bus voltage (V), current (A), power (W)—**replace with sensor reads later**. |
-| `ms` | `millis()` at send time. |
-| `cpu` | Integer **estimated CPU load %** (0–100)—see below. |
-| `ram` | Integer **estimated internal DRAM heap utilization %** (0–100)—see below. |
-
-`cpu` and `ram` are **refreshed in the firmware about once per second** (same task as serial `STATS`) but are **attached to every JSON packet**. Between refreshes you see the latest snapshot repeatedly.
-
-Why broadcast? Avoids tying telemetry to one PC IP; any host on the LAN can listen on UDP 4210 (firewall permitting).
-
-### `cpu`: idle-hook estimate (not hardware PMU)
-
-ESP32 runs FreeRTOS idle tasks on **both** cores when nothing else is ready. We register idle hooks that increment counters. Once at boot we measure how fast those counters grow during a calm window (`idle_ref`). Each second we compare average idle increments to that reference:
-
-- High idle increments → CPUs were mostly idle → **low `cpu`**.
-- Low idle increments vs reference → **`cpu`** approaches **100**.
-
-So `cpu` is a **cheap, repeatable heuristic** suitable for regressions—it is **not** a vendor-accurate “% of cycles” profiler.
-
-### `ram`: fraction of internal **malloc-capable heap** used
-
-On ESP-IDF / Arduino there are several memory buckets (internal SRAM, optionally external SPIRAM capabilities, DMA-capable caps, etc.). For a single actionable number without dumping three “heap\*” counters, we report **one percentage**:
-
-- **`heap_caps_get_total_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)`** — heap arena the allocator tracks for ordinary internal 8‑bit DRAM.
-- **`heap_caps_get_free_size(same)`** — bytes still **free** in that arena.
-
-Then:
+INA226 shunt ADC full scale is about **81.92 mV**, so with a **100 mΩ** shunt the reliable linear current range is roughly:
 
 ```text
-ram = round( 100 × (total − free) / total ), clamped to 0–100
+0.08192 V / 0.100 Ω ≈ 0.82 A
 ```
 
-Interpret `ram` as **“internal heap occupancy”**, not entire chip SRAM and not Bluetooth/Wi‑Fi proprietary pools. Typical ESP32 setups leave a large fraction of chip RAM for radios and drivers; remaining internal heap size varies by SDK options.
+Loads above that can clip the shunt channel. To measure several amps reliably, the hardware shunt must be smaller and the firmware constants must match the actual shunt.
 
----
+## INA226 Implementation Details
 
-## Building and flashing (Docker, recommended)
+The firmware reads INA226 registers directly:
 
-Requires **Docker** on the host. PlatformIO caches live under `.cache/` (gitignored).
+- `0x00` configuration
+- `0x01` shunt voltage
+- `0x02` bus voltage
+- `0x03` power
+- `0x04` current
+- `0x05` calibration
+- `0xFE` manufacturer ID
+- `0xFF` die ID
 
-1. `./indockerbuild.sh` — compile (`pio run` in `firmware/`).
-2. Plug CYD USB; set `ESPPORT` if needed (default `/dev/serial-cyd`).
-3. `./indockerflash.sh` — `pio run -t upload`.
+Calibration follows the TI formula:
 
-Optional: `dockerbuild.sh` pulls the ESP-IDF image used only by **Marauder stock flash** flow (not required for this project’s PlatformIO build).
+```text
+Current_LSB = max_expected_A / 32768
+CAL = floor(0.00512 / (Current_LSB × R_shunt))
+Power_LSB = 25 × Current_LSB
+```
 
-Optional recovery: `indockermarauderflash.sh` flashes a prebuilt **ESP32 Marauder** CYD image from Fr4nkFletcher’s repo (clones into `.cache/` on first run).
+Bus voltage decoding masks off the low status bits before applying the INA226 1.25 mV step:
 
----
+```text
+Vbus = (raw_bus & 0xFFF8) × 1.25 mV
+```
 
-## Host scripts
+Do not decode bus voltage as `(raw_bus >> 3) × 1.25 mV`; that under-reads by about 8× on the readings we observed.
+
+## Web Dashboard
+
+After Wi-Fi connects, the serial log and LCD footer show the assigned IP address. Open:
+
+```text
+http://<device-ip>/
+```
+
+The dashboard polls:
+
+```text
+http://<device-ip>/api/metrics
+```
+
+Example response:
+
+```json
+{
+  "vbus_v": 12.240,
+  "i_a": 0.012,
+  "p_w": 0.150,
+  "ms": 23630,
+  "cpu": 28,
+  "ram": 39,
+  "sensor_ok": true,
+  "sensor": "ina226",
+  "error": "ok",
+  "ip": "192.168.1.236"
+}
+```
+
+The web page keeps the author link as Unicode (`Sertaç Tüllük` → `https://www.drejo.com/`). The LCD byline uses ASCII (`Sertac Tulluk`) because the small LVGL font currently does not include Turkish glyphs.
+
+## UDP Telemetry
+
+UDP broadcast uses the same metric fields as the web API, minus the `ip` field. Any host on the same subnet can listen on port `4210`:
+
+```bash
+python3 scripts/cyd_udp_listen.py
+```
+
+Broadcast is intentionally used so the receiving PC IP does not have to be configured on the device.
+
+## Serial Verification
+
+Read the device at 115200 baud:
+
+```bash
+./scripts/cyd_serial_metrics.py -p /dev/ttyUSB6 --seconds 60
+```
+
+Common lines:
+
+```text
+STATS cpu=30 ram=39
+METRIC vbus_v=12.240 i_a=0.012 p_w=0.150 | raw_bus=0x2645 ...
+INA226_RAW cfg=0x4527 cal=0x0831 sh=0x031B(...) bus=0x2642 ...
+WIFI ip=192.168.1.236 udp_bcast_port=4210 gw=192.168.1.1
+```
+
+`METRIC` values are unfiltered: each metric tick performs one INA226 register read pass and displays the result directly.
+
+## Minimal INA226 Probe
+
+For sensor bring-up without LVGL, Wi-Fi, or the web server:
+
+```bash
+./indockerbuild_probe.sh
+ESPPORT=/dev/ttyUSB6 ./indockerflash_probe.sh
+```
+
+The probe prints INA226 register-derived values every 500 ms and is useful for checking wiring, shunt value, calibration, and bus decoding before running the full UI firmware.
+
+## Wi-Fi Credentials
+
+Copy `wifi.env.example` to `wifi.env` and set the network credentials:
+
+```bash
+cp wifi.env.example wifi.env
+```
+
+`wifi.env` is read during the Docker/PlatformIO build and generates `firmware/include/wifi_credentials.h`. Do not commit real credentials.
+
+## Building and Flashing
+
+Requires Docker on the host. PlatformIO caches live under `.cache/` and `.pio/` directories that are gitignored.
+
+```bash
+./indockerbuild.sh
+ESPPORT=/dev/ttyUSB6 ./indockerflash.sh
+```
+
+If your board appears elsewhere, change `ESPPORT` accordingly. The default is `/dev/serial-cyd`.
+
+Optional recovery:
+
+- `indockermarauderflash.sh` flashes a prebuilt ESP32 Marauder CYD image.
+- `dockerbuild.sh` prepares the ESP-IDF image used by that recovery flow.
+
+## Host Scripts
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/cyd_udp_listen.py` (+ `.sh` wrapper) | Append captured JSON lines to a file (timestamp + peer + payload). |
-| `scripts/collect_cyd_stats.py` (+ `.sh`) | Average `STATS cpu` / `ram` from UART (needs `pyserial`). |
-| `scripts/cyd_usb_power_cycle.sh` | Optional USB power helpers (if you use a controlled hub). |
+| `scripts/cyd_udp_listen.py` | Listen for UDP telemetry and print captured JSON payloads. |
+| `scripts/cyd_serial_metrics.py` | Read serial `STATS`, `METRIC`, `INA226_RAW`, and Wi-Fi lines. |
+| `scripts/collect_cyd_stats.py` | Average serial `STATS cpu` / `ram` values. |
+| `scripts/cyd_usb_power_cycle.sh` | Optional USB power helper for controlled hubs. |
 
----
+## Custom Metric Font
 
-## Custom metric font
+Large LCD metric rows use a DejaVu Sans Mono subset in `firmware/src/fonts/cyd_metric_mono.c`. Regenerate it with:
 
-Large digits use **DejaVu Sans Mono** subset in `firmware/src/fonts/cyd_metric_mono.c`. Regenerate with `firmware/scripts/regenerate_metric_font.sh` (needs Node `lv_font_conv`).
+```bash
+firmware/scripts/regenerate_metric_font.sh
+```
 
----
+The subset includes the characters needed for `Vbus`, `I`, `P`, numeric values, units, and the `Error` state.
 
-## Roadmap (not in firmware yet)
+## Known Limitations
 
-- INA219 / INA226 / INA3221 on **I2C** (CYD exposes known free pins; verify your PCB rev).
-- Optional **multicast** or per-host unicast telemetry.
-- Desktop plotter app.
+- The current 100 mΩ shunt limits reliable current measurement to about **0.8 A**.
+- Residual bus voltage after power removal can be real hardware discharge/leakage behavior; the firmware does not smooth or synthesize Vbus.
+- The embedded web page is intentionally simple and unauthenticated; keep it on a trusted LAN.
+- LCD Turkish glyphs are not included in the current small font subset.
 
-Third-party licenses (TFT_eSPI, LVGL, Arduino core) remain with their upstreams.
+Third-party licenses (TFT_eSPI, LVGL, Arduino core, PlatformIO packages) remain with their upstream projects.
