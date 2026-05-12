@@ -2,6 +2,7 @@
 wifi.env
 firmware/include/wifi_credentials.h
 firmware/.pio/
+**/.pio/
 firmware/build/
 firmware/sdkconfig
 firmware/sdkconfig.old

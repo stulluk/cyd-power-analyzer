@@ -21,7 +21,7 @@ npx --yes lv_font_conv \
   --no-compress \
   --lv-include lvgl.h \
   --lv-font-name cyd_metric_mono \
-  --symbols 'Vbus I.APW0123456789-+ ' \
+  --symbols 'Vbus I.APWError0123456789-+ ' \
   -o "$(basename "${OUT}")"
 
 # Sparse-subset converts often emit too-small line_height; clip-safe minimum for 36 px design size.
