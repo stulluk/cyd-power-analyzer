@@ -8,8 +8,8 @@
  *
  * Metrics: monospace columns — %-4s + %7.3f (~13 chars incl. unit; narrower than %-5s + %8.3f for 320-wide).
  *
- * Typography: Title Montserrat 14; metrics DejaVu Sans Mono 36 (4 bpp, fixed-width subset);
- *   footer SUBPX yellow. Font: src/fonts/cyd_metric_mono.c (lv_font_conv, see file header).
+ * Typography: Title Montserrat 14; metrics Ubuntu Mono 42 (LVGL subset cyd_metric_mono + same family on web).
+ *   footer SUBPX yellow. Regenerate: firmware/scripts/regenerate_metric_font.sh
  * Landscape: setRotation(1) → 320×240. Metrics refresh ~5 Hz.
  *
  * Serial:
@@ -45,6 +45,8 @@ static constexpr uint8_t kI2cSda = 27;
 static constexpr uint8_t kI2cScl = 22;
 static constexpr uint32_t kI2cHz = 100000;
 static constexpr uint32_t kSensorRetryMs = 1000;
+/** TEMP: non-zero adds to displayed Vbus only (LCD, JSON, UDP, METRIC). Keep 0 for production. */
+static constexpr float kTempDisplayVbusOffsetV = 0.0f;
 /**
  * PCB shunt — must match the resistor marking (e.g. R100 = 0.100 Ω).
  * INA226 shunt ADC FS ≈ 81.92 mV ⇒ linear Imax ≈ 0.08192/R_shunt (here ~0.82 A).
@@ -582,8 +584,12 @@ static const char kHttpIndexHtml[] PROGMEM = R"HTML(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>CYD Power Analyzer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Ubuntu+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
   <style>
-    :root { color-scheme: dark; --bg:#0b0f14; --card:#151b23; --fg:#e6edf3; --muted:#7d8590; --accent:#00d4ff; --bad:#ff6b6b; --ok:#52d273; }
+    :root { color-scheme: dark; --bg:#0b0f14; --card:#151b23; --fg:#e6edf3; --muted:#7d8590; --accent:#00d4ff; --bad:#ff6b6b; --ok:#52d273;
+      --font-metric: "Ubuntu Mono", ui-monospace, monospace; }
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--fg); font-family: system-ui, -apple-system, Segoe UI, sans-serif; display: grid; place-items: center; }
     main { width: min(92vw, 460px); background: var(--card); border: 1px solid #30363d; border-radius: 18px; padding: 22px; box-shadow: 0 24px 60px #0008; }
@@ -592,10 +598,10 @@ static const char kHttpIndexHtml[] PROGMEM = R"HTML(
     h1 .byline:hover { color: var(--accent); text-decoration: underline; }
     .metric { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: baseline; padding: 16px 0; border-top: 1px solid #30363d; }
     .metric:first-of-type { border-top: 0; }
-    .name { color: var(--muted); font-size: .95rem; }
-    .value { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: clamp(2rem, 10vw, 3.4rem); font-weight: 700; letter-spacing: -.05em; }
+    .name { color: var(--muted); font-size: 2.36rem; font-weight: 600; font-family: var(--font-metric); line-height: 1.15; }
+    .value { font-family: var(--font-metric); font-size: clamp(2rem, 10vw, 3.4rem); font-weight: 700; letter-spacing: 0; font-variant-numeric: tabular-nums; }
     .unit { color: var(--muted); font-size: 1rem; margin-left: 4px; }
-    footer { margin-top: 14px; color: var(--muted); font-size: .86rem; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    footer { margin-top: 14px; color: var(--muted); font-size: .86rem; font-family: var(--font-metric); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
     .ok { color: var(--ok); }
     .bad { color: var(--bad); }
   </style>
@@ -712,9 +718,11 @@ static void metrics_timer_cb(lv_timer_t * /*timer*/) {
     }
   }
 
+  const float v_disp = sensor_ok ? (v + kTempDisplayVbusOffsetV) : v;
+
   if (sensor_ok) {
     char line[40];
-    std::snprintf(line, sizeof(line), "%-4s%7.3f V", "Vbus", static_cast<double>(v));
+    std::snprintf(line, sizeof(line), "%-4s%7.3f V", "Vbus", static_cast<double>(v_disp));
     lv_label_set_text(s_lbl_v, line);
     std::snprintf(line, sizeof(line), "%-4s%7.3f A", "I", static_cast<double>(a));
     lv_label_set_text(s_lbl_i, line);
@@ -732,7 +740,7 @@ static void metrics_timer_cb(lv_timer_t * /*timer*/) {
   }
   s_sensor_ok = sensor_ok;
   if (sensor_ok) {
-    s_metric_vbus = v;
+    s_metric_vbus = v_disp;
     s_metric_i = a;
     s_metric_p = p;
   }
@@ -741,7 +749,7 @@ static void metrics_timer_cb(lv_timer_t * /*timer*/) {
   wifi_footer_line(foot, sizeof(foot));
   lv_label_set_text(s_lbl_foot, foot);
 
-  telemetry_udp_send(v, a, p, sensor_ok);
+  telemetry_udp_send(v_disp, a, p, sensor_ok);
 }
 
 void setup() {
@@ -814,10 +822,10 @@ void setup() {
   lv_label_set_text(s_lbl_i, "I     0.000 A");
   lv_label_set_text(s_lbl_p, "P     0.000 W");
 
-  /* Tighter vertical pack (~54 px row pitch) for 36 pt mono — user wanted less line gap + less label/value gap (see snprintf above). */
-  lv_obj_align(s_lbl_v, LV_ALIGN_CENTER, 0, -57);
-  lv_obj_align(s_lbl_i, LV_ALIGN_CENTER, 0, -3);
-  lv_obj_align(s_lbl_p, LV_ALIGN_CENTER, 0, 51);
+  /* ~52 px row pitch; nudge whole block up ~10 px vs CENTER so less gap under title. */
+  lv_obj_align(s_lbl_v, LV_ALIGN_CENTER, 0, -62);
+  lv_obj_align(s_lbl_i, LV_ALIGN_CENTER, 0, -10);
+  lv_obj_align(s_lbl_p, LV_ALIGN_CENTER, 0, 42);
 
   s_lbl_foot = lv_label_create(scr);
   lv_label_set_long_mode(s_lbl_foot, LV_LABEL_LONG_SCROLL_CIRCULAR);
