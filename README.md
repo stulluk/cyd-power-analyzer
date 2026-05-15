@@ -1,6 +1,6 @@
 # CYD Power Analyzer
 
-Firmware and host tooling for an **ESP32 Cheap Yellow Display (CYD / ESP32-2432S028)** power analyzer. The device reads an **INA226** over I2C, renders live **Vbus / current / power** on the LCD, broadcasts JSON telemetry over UDP, serves a small browser dashboard, and prints serial diagnostics for bring-up.
+Firmware and host tooling for an **ESP32 Cheap Yellow Display (CYD / ESP32-2432S028)** power analyzer. The device reads an **INA226** over I2C, renders live **voltage, current, and power** on the LCD, broadcasts JSON telemetry over UDP, serves a small browser dashboard, and prints serial diagnostics for bring-up.
 
 Repository: <https://github.com/stulluk/cyd-power-analyzer>
 
@@ -9,7 +9,7 @@ Repository: <https://github.com/stulluk/cyd-power-analyzer>
 | Area | Behavior |
 |------|----------|
 | **Sensor** | Direct INA226 register access over `Wire` (no INA library dependency). |
-| **Display** | LVGL/TFT_eSPI landscape UI with large `Vbus`, `I`, and `P` rows plus Wi-Fi/sensor footer. |
+| **Display** | LVGL/TFT_eSPI landscape UI with large metric rows (`V` / `I` / `P` on LCD; **Voltage** / Current / Power on the web) plus Wi-Fi/sensor footer. |
 | **Web UI** | `http://<device-ip>/` shows the same live values; `/api/metrics` returns JSON. |
 | **UDP telemetry** | Broadcast JSON on `CYD_UDP_TELEM_PORT` (`4210`) about every 200 ms when Wi-Fi is connected. |
 | **Serial diagnostics** | `STATS`, `METRIC`, `INA226_RAW`, and Wi-Fi/IP lines at 115200 baud. |
@@ -75,6 +75,26 @@ Vbus = (raw_bus & 0xFFF8) × 1.25 mV
 
 Do not decode bus voltage as `(raw_bus >> 3) × 1.25 mV`; that under-reads by about 8× on the readings we observed.
 
+### Readout precision, LSB stepping, and why three decimals are enough
+
+The INA226 does **not** return a decimal string. Each quantity is a **signed or unsigned integer register** multiplied by a fixed **LSB** (least-significant bit weight):
+
+| Quantity | Typical LSB (this firmware’s calibration) |
+|----------|---------------------------------------------|
+| Bus voltage | **1.25 mV** per bus ADC code step |
+| Current | **`Current_LSB` ≈ `max_expected_A / 32768`** (here about **24 µA** per current code step) |
+| Power | **`Power_LSB = 25 × Current_LSB`** (here about **0.61 mW** per power code step) |
+
+So when you show **six decimal places** (as in a diagnostic build), you often see exactly this pattern:
+
+- **Current** flickering between values like **0.000024 A** and **0.000049 A** with **no load** is not “random decimals”: it is usually the **current register’s integer code** hopping by **one or two counts** near zero (noise, offset, and quantization), which maps to **one or two × `Current_LSB`**.
+- **Power** jumping between **0.000000 W** and **0.000610 W** is the same idea at **coarser** resolution: the **power register** is often **0 or 1 LSB** when the true power is tiny and the device is idle.
+- **Bus voltage** with a **fixed 12 V adapter** and **no load** often looks very stable in the **first three fractional digits** (millivolt scale is close to the **1.25 mV** ADC step). Digits beyond that are mostly **printing precision**, not extra physical resolution. When you **draw current**, the bus sags slightly and more digits can move because the **underlying code** changes.
+
+When the **adapter is unplugged**, bus (and derived) readings go to **zero** as expected.
+
+**Recommendation:** for a **human-facing** UI and logs, **three decimal places** are a good default: they match the order of the **bus voltage** step, make **idle current/power chatter** invisible instead of alarming, and avoid implying false precision. Use **more decimals** only when you deliberately want to **visualize register LSB behavior** (bring-up, noise, or averaging experiments).
+
 ## Web Dashboard
 
 After Wi-Fi connects, the serial log and LCD footer show the assigned IP address. Open:
@@ -89,13 +109,13 @@ The dashboard polls:
 http://<device-ip>/api/metrics
 ```
 
-Example response:
+Example response (field names fixed; decimal places depend on firmware build — **three** is recommended for display):
 
 ```json
 {
-  "vbus_v": 12.240,
+  "vbus_v": 12.25,
   "i_a": 0.012,
-  "p_w": 0.150,
+  "p_w": 0.15,
   "ms": 23630,
   "cpu": 28,
   "ram": 39,
@@ -183,15 +203,17 @@ Optional recovery:
 | `scripts/collect_cyd_stats.py` | Average serial `STATS cpu` / `ram` values. |
 | `scripts/cyd_usb_power_cycle.sh` | Optional USB power helper for controlled hubs. |
 
-## Custom Metric Font
+## Custom metric font (LCD)
 
-Large LCD metric rows use a DejaVu Sans Mono subset in `firmware/src/fonts/cyd_metric_mono.c`. Regenerate it with:
+Large LCD metric rows use an **Ubuntu Mono** subset baked into `firmware/src/fonts/cyd_metric_mono.c` (name kept for LVGL). Regenerate from a TTF (default: Ubuntu Mono Regular) with:
 
 ```bash
 firmware/scripts/regenerate_metric_font.sh
 ```
 
-The subset includes the characters needed for `Vbus`, `I`, `P`, numeric values, units, and the `Error` state.
+The subset is defined by `firmware/scripts/regenerate_metric_font.sh` (`--symbols`); it covers the **LCD** metric strings (e.g. `V`, `I`, `P`, digits, `.`, units, `Error`).
+
+**Note:** The embedded web dashboard loads **Ubuntu Mono** from Google Fonts so the browser matches the LCD style; the device needs access to `fonts.googleapis.com` / `fonts.gstatic.com` unless you self-host the font for an offline LAN.
 
 ## Known Limitations
 

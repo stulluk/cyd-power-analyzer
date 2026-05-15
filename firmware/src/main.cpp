@@ -3,10 +3,10 @@
  *
  * WiFi: STA credentials from repo-root wifi.env (pre-build generates include/wifi_credentials.h).
  * Telemetry: UDP JSON broadcast on subnet to CYD_UDP_TELEM_PORT (4210) each metrics tick when connected.
- *   Fields: vbus_v, i_a, p_w, ms (every tick ~5 Hz) + cpu, ram (1 Hz snapshot in stats_task).
+ *   Fields: vbus_v, i_a, p_w, ms (~5 Hz) + cpu, ram (1 Hz snapshot in stats_task).
  *   ram = internal malloc heap used % from heap_caps total/free (MALLOC_CAP_INTERNAL|8BIT).
  *
- * Metrics: monospace columns — %-4s + %7.3f (~13 chars incl. unit; narrower than %-5s + %8.3f for 320-wide).
+ * Metrics: monospace columns — `V` / `I` / `P` labels all use %-4s + %7.3f so row widths match.
  *
  * Typography: Title Montserrat 14; metrics Ubuntu Mono 42 (LVGL subset cyd_metric_mono + same family on web).
  *   footer SUBPX yellow. Regenerate: firmware/scripts/regenerate_metric_font.sh
@@ -609,7 +609,7 @@ static const char kHttpIndexHtml[] PROGMEM = R"HTML(
 <body>
   <main>
     <h1>CYD Power Analyzer <a class="byline" href="https://www.drejo.com/" target="_blank" rel="noopener">by Sertaç Tüllük</a></h1>
-    <section class="metric"><div class="name">Vbus</div><div><span id="v" class="value">--.---</span><span class="unit">V</span></div></section>
+    <section class="metric"><div class="name">Voltage</div><div><span id="v" class="value">--.---</span><span class="unit">V</span></div></section>
     <section class="metric"><div class="name">Current</div><div><span id="i" class="value">--.---</span><span class="unit">A</span></div></section>
     <section class="metric"><div class="name">Power</div><div><span id="p" class="value">--.---</span><span class="unit">W</span></div></section>
     <footer>
@@ -722,7 +722,7 @@ static void metrics_timer_cb(lv_timer_t * /*timer*/) {
 
   if (sensor_ok) {
     char line[40];
-    std::snprintf(line, sizeof(line), "%-4s%7.3f V", "Vbus", static_cast<double>(v_disp));
+    std::snprintf(line, sizeof(line), "%-4s%7.3f V", "V", static_cast<double>(v_disp));
     lv_label_set_text(s_lbl_v, line);
     std::snprintf(line, sizeof(line), "%-4s%7.3f A", "I", static_cast<double>(a));
     lv_label_set_text(s_lbl_i, line);
@@ -730,7 +730,7 @@ static void metrics_timer_cb(lv_timer_t * /*timer*/) {
     lv_label_set_text(s_lbl_p, line);
   } else {
     char line[40];
-    std::snprintf(line, sizeof(line), "%-4s%7s V", "V", "Error");
+    std::snprintf(line, sizeof(line), "%-4s%s V", "V", "Error");
     lv_label_set_text(s_lbl_v, line);
     std::snprintf(line, sizeof(line), "%-4s%7s A", "I", "Error");
     lv_label_set_text(s_lbl_i, line);
@@ -818,7 +818,7 @@ void setup() {
   lv_obj_set_style_text_color(s_lbl_i, lv_color_hex(0xffffff), LV_PART_MAIN);
   lv_obj_set_style_text_color(s_lbl_p, lv_color_hex(0xffffff), LV_PART_MAIN);
 
-  lv_label_set_text(s_lbl_v, "Vbus  0.000 V");
+  lv_label_set_text(s_lbl_v, "V     0.000 V");
   lv_label_set_text(s_lbl_i, "I     0.000 A");
   lv_label_set_text(s_lbl_p, "P     0.000 W");
 
